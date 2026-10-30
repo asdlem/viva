@@ -157,8 +157,11 @@ func TestRasterizeLigatureRunFitsItsCells(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer services.close()
+				// The cells are narrower than the font's advance, so the fitting
+				// scale is not the identity and a reshaped layout shows up in the
+				// width the run is drawn at.
 				label := platform.TextLabel{
-					Value: value, Width: 600, Height: 28, FontSize: 14, Mono: true, CellWidth: 8.4,
+					Value: value, Width: 600, Height: 28, FontSize: 14, Mono: true, CellWidth: 7,
 					Runs: []ui.TextRun{{Bytes: int32(len(value)), Cells: int32(len(value)), Color: ui.RGB(255, 255, 255), Ligatures: true}},
 				}
 				services.useFonts(systemFonts().grayscale())
