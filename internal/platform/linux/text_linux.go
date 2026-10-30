@@ -575,7 +575,8 @@ func (services *textServices) drawRuns(context uintptr, label platform.TextLabel
 				services.cairoTranslate(context, left, baseline)
 				services.cairoScale(context, span/float64(metrics.Width), 1)
 				services.cairoMoveTo(context, 0, -float64(metrics.Ascent))
-				services.updateLayout(context, services.layout)
+				// Draw the measured layout: updating it under this transform reshapes
+				// its metrics and leaks the scaled matrix into subsequent runs.
 				services.showLayout(context, services.layout)
 				services.cairoRestore(context)
 			}
