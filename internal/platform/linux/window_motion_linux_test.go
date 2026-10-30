@@ -11,7 +11,8 @@ func TestQueuedDragMotionKeepsLatestPositionBeforeRelease(t *testing.T) {
 		events[index] = xcbInputEvent{ResponseType: xcbMotionNotify, Event: 1, State: xcbButton1Mask, EventX: int16(index)}
 	}
 	events[100] = xcbInputEvent{ResponseType: xcbButtonRelease, Event: 1, State: xcbButton1Mask}
-	read, freed := 0, 0
+	read := 0
+	var freed []unsafe.Pointer
 	state := linuxWindowState{win: &window{api: &xcbAPI{
 		pollForEvent: func(uintptr) unsafe.Pointer {
 			if read == len(events) {
@@ -21,7 +22,7 @@ func TestQueuedDragMotionKeepsLatestPositionBeforeRelease(t *testing.T) {
 			read++
 			return unsafe.Pointer(event)
 		},
-		free: func(unsafe.Pointer) { freed++ },
+		free: func(event unsafe.Pointer) { freed = append(freed, event) },
 	}}}
 	motion := (*xcbInputEvent)(state.nextEvent())
 	if motion == nil || motion.ResponseType != xcbMotionNotify || motion.EventX != 99 {
@@ -30,8 +31,13 @@ func TestQueuedDragMotionKeepsLatestPositionBeforeRelease(t *testing.T) {
 	if release := state.nextEvent(); release != unsafe.Pointer(&events[100]) {
 		t.Fatal("drag compression lost or reordered the button release")
 	}
-	if freed != 99 || state.nextEvent() != nil {
-		t.Fatalf("discarded motion count = %d, want 99, with an empty queue", freed)
+	if len(freed) != 99 || state.nextEvent() != nil {
+		t.Fatalf("discarded motion count = %d, want 99, with an empty queue", len(freed))
+	}
+	for _, discarded := range freed {
+		if discarded == unsafe.Pointer(motion) {
+			t.Fatal("the delivered drag position was freed")
+		}
 	}
 }
 
@@ -66,17 +72,21 @@ func TestQueuedDragMotionPreservesInputBoundaries(t *testing.T) {
 
 func TestQueuedHoverMotionIsNotCompressed(t *testing.T) {
 	events := []xcbInputEvent{{ResponseType: xcbMotionNotify}, {ResponseType: xcbMotionNotify}}
-	read := 0
+	read, polls := 0, 0
 	state := linuxWindowState{win: &window{api: &xcbAPI{
 		pollForEvent: func(uintptr) unsafe.Pointer {
+			polls++
+			if read == len(events) {
+				return nil
+			}
 			event := &events[read]
 			read++
 			return unsafe.Pointer(event)
 		},
 		free: func(unsafe.Pointer) { t.Fatal("hover motion was discarded") },
 	}}}
-	if state.nextEvent() != unsafe.Pointer(&events[0]) || read != 1 {
-		t.Fatal("hover motion read past the current event")
+	if state.nextEvent() != unsafe.Pointer(&events[0]) || polls != 1 || read != 1 {
+		t.Fatal("hover motion was read past")
 	}
 }
 
@@ -95,7 +105,7 @@ func TestQueuedDragMotionBoundsTheBatch(t *testing.T) {
 		},
 		free: func(unsafe.Pointer) {},
 	}}}
-	if event := (*xcbInputEvent)(state.nextEvent()); event.EventX != 256 || read != 257 {
+	if event := (*xcbInputEvent)(state.nextEvent()); event.EventX != maxQueuedDragMotions || read != maxQueuedDragMotions+1 {
 		t.Fatalf("motion batch did not yield: position %d, read %d events", event.EventX, read)
 	}
 	if event := (*xcbInputEvent)(state.nextEvent()); event.EventX != 299 {
@@ -128,8 +138,11 @@ func BenchmarkQueuedDragMotion(benchmark *testing.B) {
 			}}}
 			delivered := 0
 			benchmark.ReportAllocs()
+			// The uncompressed path polls once per event without the loop's free,
+			// which the compressed path pays inside nextEvent, so the difference
+			// is an upper bound on what coalescing adds.
 			for benchmark.Loop() {
-				read = 0
+				read, state.held = 0, nil
 				for {
 					var event unsafe.Pointer
 					if compress {

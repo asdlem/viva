@@ -421,6 +421,18 @@ func (state *linuxWindowState) takeHeld() unsafe.Pointer {
 	return event
 }
 
+// maxQueuedDragMotions bounds the queued drag positions one dispatch may
+// discard, so a queue under continuous input cannot keep the loop inside a
+// single window's connection: every batch ends and the outer loop serves the
+// other descriptors and the window-closed and error checks between batches.
+const maxQueuedDragMotions = 256
+
+// nextEvent returns the next event of the window, with the queued positions of
+// a primary-button drag collapsed to their latest one: an application only
+// paints the pointer where it ended up, so an obsolete position would cost a
+// frame and a present for nothing. Every other event, and a motion that moves
+// to another window, root, child, screen or set of held buttons and modifiers,
+// is a boundary and is delivered as it was read, in order.
 func (state *linuxWindowState) nextEvent() unsafe.Pointer {
 	event := state.takeHeld()
 	if event == nil {
@@ -434,7 +446,7 @@ func (state *linuxWindowState) nextEvent() unsafe.Pointer {
 		return event
 	}
 	// Skip stale drag positions, bounding each read-ahead batch under continuous input.
-	for range 256 {
+	for range maxQueuedDragMotions {
 		next := state.win.api.pollForEvent(state.win.connection)
 		if next == nil {
 			break
